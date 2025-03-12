@@ -1,11 +1,8 @@
-# Summarize Videos Using OpenVINO-GenAI, Langchain, and MiniCPM-V-2_6
+# Summarize Videos Using OpenVINO, Langchain, and SmolVLM
 
 ## Installation
 
-1. First, follow the steps on the [MiniCPM-V-2_6 HuggingFace Page](https://huggingface.co/openbmb/MiniCPM-V-2_6) to gain
-access to the model. For more information on user access tokens for access to gated models
-see [here](https://huggingface.co/docs/hub/en/security-tokens).
-2. Next, install Intel Client GPU, Conda, Set Up Python Environment and Create OpenVINO optimized model for MiniCPM
+1. First, install Intel Client GPU, Conda, Set Up Python Environment and Create OpenVINO optimized model for video summarization
 
 ```
 # Validated on Ubuntu 24.04 and 22.04
