@@ -11,7 +11,7 @@ else
     wget https://github.com/intel-iot-devkit/sample-videos/raw/master/one-by-one-person-detection.mp4
 fi
 
-INPUT_FILE="bb_chunk_small.mp4"
+INPUT_FILE="one-by-one-person-detection.mp4"
 DEVICE="xpu:0"
 RESOLUTION_X=480
 RESOLUTION_Y=270

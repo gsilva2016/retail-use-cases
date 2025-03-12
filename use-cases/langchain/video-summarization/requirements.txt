@@ -1,4 +1,5 @@
 optimum-intel@git+https://github.com/huggingface/optimum-intel.git
+decord
 fastapi
 uvicorn
 requests
