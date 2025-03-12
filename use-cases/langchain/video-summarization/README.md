@@ -1,4 +1,4 @@
-# Summarize Videos Using OpenVINO, Langchain, and SmolVLM
+# Summarize Videos Using OpenVINO, Langchain, and [SmolVLM](https://huggingface.co/HuggingFaceTB/SmolVLM2-2.2B-Instruct)
 
 ## Installation
 

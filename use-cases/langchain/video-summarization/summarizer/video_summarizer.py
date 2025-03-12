@@ -40,7 +40,7 @@ def output_handler(text: str,
 
 if __name__ == '__main__':
     # Parse inputs
-    parser_txt = "Generate video summarization using LangChain, OpenVINO-genai, and MiniCPM-V-2_6."
+    parser_txt = "Generate video summarization using LangChain, OpenVINO, and SmolVLM2."
     parser = argparse.ArgumentParser(parser_txt)
     parser.add_argument("video_file", type=str,
                         help='Path to video you want to summarize.')
@@ -50,8 +50,8 @@ if __name__ == '__main__':
                         help="Text prompt. By default set to: `Please summarize this video.`",
                         default="Please summarize this video.")
     parser.add_argument("-d", "--device", type=str,
-                        help="Target device for running ov MiniCPM-v-2_6",
-                        default="CPU")
+                        help="Target device for running smolvlm2",
+                        default="xpu")
     parser.add_argument("-t", "--max_new_tokens", type=int,
                         help="Maximum number of tokens to be generated.",
                         default=500)
