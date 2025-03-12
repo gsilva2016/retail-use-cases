@@ -19,15 +19,9 @@ command can be used to skip the re-install of dependencies.
 ./install.sh --skip
 ```
 
-## Convert and Save Optimized MiniCPM-V-2_6
-
-This section can be skipped if you ran `install.sh` the first time. The `install.sh` script runs this command as part of 
-its setup. This section is to give the user flexibility to tweak the `optimum-cli` command for certain model parameters. 
-
-Ensure you are inside the conda environment created for this project. 
+## Install HF Transformers package that enables smolvlm2 inference from source
 ```
-conda activate ovlangvidsumm
-optimum-cli export openvino -m openbmb/MiniCPM-V-2_6 --trust-remote-code --weight-format int8 MiniCPM_INT8 # int4 also available
+pip install git+https://github.com/huggingface/transformers@v4.49.0-SmolVLM-2
 ```
 
 ## Run Video Summarization

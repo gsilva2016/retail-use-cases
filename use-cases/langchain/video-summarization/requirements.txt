@@ -1,9 +1,12 @@
 optimum-intel@git+https://github.com/huggingface/optimum-intel.git
-nncf
-openvino-genai
-timm
-einops
-decord
 fastapi
 uvicorn
 requests
+pyav
+num2words
+openvino
+--extra-index-url https://download.pytorch.org/whl/test/xpu
+torch
+torchvision
+torchaudio
+
