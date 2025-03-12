@@ -11,11 +11,15 @@ else
     wget https://github.com/intel-iot-devkit/sample-videos/raw/master/one-by-one-person-detection.mp4
 fi
 
-INPUT_FILE="one-by-one-person-detection.mp4"
-DEVICE="GPU"
+INPUT_FILE="bb_chunk_small.mp4"
+DEVICE="xpu:0"
 RESOLUTION_X=480
 RESOLUTION_Y=270
-PROMPT='As an expert investigator, please analyze this video. Summarize the video, highlighting any shoplifting or suspicious activity. The output must contain the following 3 sections: Overall Summary, Activity Observed, Potential Suspicious Activity. It should be formatted similar to the following example:
+MODEL="HuggingFaceTB/SmolVLM2-2.2B-Instruct"
+PROMPT='As an expert investigator, please analyze this video depicting a retail checkout scenario. Summarize the video, highlighting any shoplifting or suspicious activity. 
+The output must contain the following 3 sections:
+Overall Summary, Activity Observed, Potential Suspicious Activity.
+It should be formatted similar to the following example:
 
 **Overall Summary**
 Here is a detailed description of the video.
@@ -32,7 +36,7 @@ uvicorn api.app:app &
 APP_PID=$!
 
 echo "Running Video Summarizer"
-PYTHONPATH=. python summarizer/video_summarizer.py $INPUT_FILE MiniCPM_INT8/ -d $DEVICE -r $RESOLUTION_X $RESOLUTION_Y -p "$PROMPT"
+PYTHONPATH=. python summarizer/video_summarizer.py $INPUT_FILE $MODEL -d $DEVICE -r $RESOLUTION_X $RESOLUTION_Y -p "$PROMPT"
 
 # terminate fastapi app after video summarization concludes
 kill $APP_PID

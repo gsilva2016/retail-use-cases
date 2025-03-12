@@ -8,9 +8,9 @@ from pathlib import Path
 
 import requests
 from langchain.prompts import PromptTemplate
+from smolvlm_wrapper import SmolVLM2Worker
 from langchain_community.document_loaders.video import VideoChunkLoader
 
-from ov_lvm_wrapper import OVMiniCPMV26Worker
 from merger.summary_merger import SummaryMerger
 
 os.environ["no_proxy"] = "localhost,127.0.0.1"
@@ -45,7 +45,7 @@ if __name__ == '__main__':
     parser.add_argument("video_file", type=str,
                         help='Path to video you want to summarize.')
     parser.add_argument("model_dir", type=str,
-                        help="Path to openvino-genai optimized model")
+                        help="Path to smolvlm2 model (either 256M, 500M, or 2.2B)")    
     parser.add_argument("-p", "--prompt", type=str,
                         help="Text prompt. By default set to: `Please summarize this video.`",
                         default="Please summarize this video.")
@@ -55,9 +55,6 @@ if __name__ == '__main__':
     parser.add_argument("-t", "--max_new_tokens", type=int,
                         help="Maximum number of tokens to be generated.",
                         default=500)
-    parser.add_argument("-f", "--max_num_frames", type=int,
-                        help="Maximum number of frames to be sampled per chunk for inference. Set to a smaller number if OOM.",
-                        default=32)
     parser.add_argument("-c", "--chunk_duration", type=int,
                         help="Maximum length in seconds for each chunk of video.",
                         default=30)
@@ -80,17 +77,13 @@ if __name__ == '__main__':
         input_variables=["video", "question"],
         template="{video},{question}"
     )
-
-    # Wrap OpenVINO-GenAI optimized model in custom langchain wrapper
-    resolution = [] if not args.resolution else args.resolution
-    ov_minicpm = OVMiniCPMV26Worker(model_dir=args.model_dir,
-                                    device=args.device,
-                                    max_new_tokens=args.max_new_tokens,
-                                    max_num_frames=args.max_num_frames,
-                                    resolution=resolution)
-
+        
+    # Wrap SmolVLM2 model in custom langchain wrapper
+    smolvlm = SmolVLM2Worker(model_dir = args.model_dir,
+                                    device = args.device,
+                                    max_new_tokens = args.max_new_tokens)    
     # Create pipeline and invoke
-    chain = prompt | ov_minicpm
+    chain =  prompt | smolvlm
 
     # Initialize video chunk loader
     loader = VideoChunkLoader(

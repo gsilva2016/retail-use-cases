@@ -55,10 +55,3 @@ pip install -r requirements.txt
 git clone https://github.com/gsilva2016/langchain.git
 pushd langchain; git checkout openvino_tts_tool; popd
 pip install -e langchain/libs/community
-
-if [ "$1" == "--skip" ]; then
-  echo "Skipping OpenVINO optimized model file creation"
-else
-  echo "Creating OpenVINO optimized model files for MiniCPM"
-  optimum-cli export openvino -m openbmb/MiniCPM-V-2_6 --trust-remote-code --weight-format int8 MiniCPM_INT8 # int4 also available
-fi
