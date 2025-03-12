@@ -16,11 +16,6 @@ command can be used to skip the re-install of dependencies.
 ./install.sh --skip
 ```
 
-## Install HF Transformers package that enables smolvlm2 inference from source
-```
-pip install git+https://github.com/huggingface/transformers@v4.49.0-SmolVLM-2
-```
-
 ## Run Video Summarization
 
 Summarize [this sample video](https://github.com/intel-iot-devkit/sample-videos/raw/master/one-by-one-person-detection.mp4)

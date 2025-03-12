@@ -47,11 +47,12 @@ else
 fi
 
 # Create python environment
-conda create -n ovlangvidsumm python=3.10 -y
-conda activate ovlangvidsumm
+conda create -n smolvidsumm python=3.10 -y
+conda activate smolvidsumm
 echo 'y' | conda install pip
 
 pip install -r requirements.txt
+pip install git+https://github.com/huggingface/transformers@v4.49.0-SmolVLM-2
 git clone https://github.com/gsilva2016/langchain.git
 pushd langchain; git checkout openvino_tts_tool; popd
 pip install -e langchain/libs/community

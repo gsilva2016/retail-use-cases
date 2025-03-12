@@ -2,7 +2,7 @@
 
 source activate-conda.sh
 activate_conda
-conda activate ovlangvidsumm
+conda activate smolvidsumm
 
 if [ "$1" == "--skip" ]; then
 	echo "Skipping sample video download"
