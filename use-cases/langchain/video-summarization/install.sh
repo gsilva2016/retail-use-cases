@@ -41,7 +41,13 @@ else
 	wget https://github.com/intel/compute-runtime/releases/download/24.52.32224.5/intel-opencl-icd_24.52.32224.5_amd64.deb
 	wget https://github.com/intel/compute-runtime/releases/download/24.52.32224.5/libigdgmm12_22.5.5_amd64.deb
 	sudo dpkg -i *.deb
-	# sudo apt install ocl-icd-libopencl1
+
+        # Offline installation of oneapi base toolkit necessary for pytorch
+        echo "Installing OneAPI"
+        wget https://registrationcenter-download.intel.com/akdlm/IRC_NAS/dfc4a434-838c-4450-a6fe-2fa903b75aa7/intel-oneapi-base-toolkit-2025.0.1.46_offline.sh
+        sudo sh ./intel-oneapi-base-toolkit-2025.0.1.46_offline.sh -a --silent --cli --eula accept
+        sudo apt update
+        sudo apt -y install cmake pkg-config build-essential
 	cd ..
 	
 fi
