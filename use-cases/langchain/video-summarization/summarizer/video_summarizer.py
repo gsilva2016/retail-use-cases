@@ -1,152 +1,225 @@
-import argparse
-import ast
 import os
 import sys
 import time
+import argparse
 from concurrent.futures.thread import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from pathlib import Path
+from pydantic import BaseModel, Field
+import json
+import threading
+from MultiRTSPChunkLoader import MultiRTSPChunkLoader
+from utils import post_request, is_valid_rtsp_url, load_chunk_metadata, all_metadata_written, extract_timestamp_from_chunk
 
-import requests
-from langchain.prompts import PromptTemplate
-from langchain_community.document_loaders.video import VideoChunkLoader
+class SummarizerConfig(BaseModel):
+    rtsp_sources: list[str]
+    prompt: str = Field(default="Please summarize this video.")
+    chunk_duration: int = Field(default=30, ge=1, description="Chunk duration in seconds.")
+    chunk_overlap: int = Field(default=2, ge=0, description="Overlap between chunks in seconds.")
+    framerate: int = Field(default=10, ge=1, description="Framerate for video processing.")
+    outfile: str = Field(default="", description="Output file for generated summaries.")
+    chunk_dir: str = Field(default="multi_cam_chunks", description="Directory to store video chunks.")
+    anomaly_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Threshold for anomaly detection.")
+    merge_cadence: int = Field(default=60, ge=1, description="Cadence (in seconds) to merge summaries.")
+    use_merger: bool = Field(default=True, description="Whether to use the merger/vertex for overall summaries.")
 
-from ov_lvm_wrapper import OVMiniCPMV26Worker
-from merger.summary_merger import SummaryMerger
+class VideoSummarizer:
+    def __init__(self, config: SummarizerConfig):
+        self.config = config
 
-os.environ["no_proxy"] = "localhost,127.0.0.1"
+        # Initialize RTSP Feeds (Doesn't need to be a call to endpoint. Initilize it here, call lazy_load in a thread))
+        self.rtsp_sources = {f"cam{str(i+1).zfill(2)}": source for i, source in enumerate(config.rtsp_sources)}
+        self.validate_sources()
+        self.chunk_loader_params = {"window_size": config.chunk_duration * config.framerate,
+                                "fps": config.framerate,
+                                "overlap": config.chunk_overlap * config.framerate}
+        self.loader = MultiRTSPChunkLoader(
+            camera_sources=self.rtsp_sources,
+            chunk_type="sliding_window",
+            chunk_args=self.chunk_loader_params,
+            output_dir=config.chunk_dir)
 
+        # Run lazy_load in a separate thread
+        threading.Thread(target=self.loader.lazy_load, daemon=True).start()
 
-def post_request(input_data):
-    formatted_req = {
-        "summaries": input_data
-    }
-    response = requests.post(url="http://127.0.0.1:8000/merge_summaries", json=formatted_req)
-    return response.content
+        # Set up variables for video summarization and anomaly detection
+        self.cloud_prompt = (
+            config.prompt +
+            " Please analyze all attached videos as if they were combined into a single video. "
+            "In addition, the last information produced must be a score between 0 and 1 to represent how suspicious the video is. "
+            "The score should be a float rounded to the tenth decimal and formatted as the following example: \n **anomaly score**: 0.0"
+        )
+        self.chunk_summaries = {}
+        self.last_merge_time = time.time()
 
+    def validate_sources(self):
+        for source in self.rtsp_sources.values():
+            if not (is_valid_rtsp_url(source) or os.path.exists(source)):
+                print(f"Invalid RTSP URL or file path: {source}")
+                sys.exit()
 
-def output_handler(text: str,
-                   filename: str = '',
-                   mode: str = 'w',
-                   verbose: bool = True):
-    # Print to terminal
-    if verbose:
-        print(text)
+    def generate_chunk_summary(self, file, timestamp):
+        for camera_id in self.rtsp_sources.keys():
+            # Load metadata
+            camera_dir = os.path.join(self.config.chunk_dir, camera_id)
+            metadata_file_path = os.path.join(camera_dir, f"{camera_id}_metadata.json")
+            doc = load_chunk_metadata(metadata_file_path, os.path.join(camera_dir, file), camera_id)
 
-    # Write to file, if requested
-    if filename != '':
-        with open(filename, mode) as FH:
-            print(text, file=FH)
+            # Generate summary
+            inputs = {"video": doc.metadata["chunk_path"], "question": self.config.prompt}
+            with ThreadPoolExecutor() as pool:
+                future = pool.submit(post_request, inputs, endpoint="generate_summary")
+                output = future.result().decode("utf-8")
 
+            # Update storage (TO DO: Milvis integration)
+            start_time = datetime.strptime(doc.metadata["timestamp"], "%Y-%m-%d_%H-%M-%S")
+            chunk_args = self.chunk_loader_params #["chunk_args"]
+            window_size = chunk_args["window_size"]
+            fps = chunk_args["fps"]
+            end_time = start_time + timedelta(seconds=window_size / fps)
+            self.chunk_summaries[Path(doc.metadata["chunk_path"]).stem] = {
+                "start_time": start_time,
+                "end_time": end_time,
+                "summary": output
+            }
 
-if __name__ == '__main__':
-    # Parse inputs
-    parser_txt = "Generate video summarization using LangChain, OpenVINO-genai, and MiniCPM-V-2_6."
-    parser = argparse.ArgumentParser(parser_txt)
-    parser.add_argument("video_file", type=str,
-                        help='Path to video you want to summarize.')
-    parser.add_argument("model_dir", type=str,
-                        help="Path to openvino-genai optimized model")
-    parser.add_argument("-p", "--prompt", type=str,
-                        help="Text prompt. By default set to: `Please summarize this video.`",
-                        default="Please summarize this video.")
-    parser.add_argument("-d", "--device", type=str,
-                        help="Target device for running ov MiniCPM-v-2_6",
-                        default="CPU")
-    parser.add_argument("-t", "--max_new_tokens", type=int,
-                        help="Maximum number of tokens to be generated.",
-                        default=500)
-    parser.add_argument("-f", "--max_num_frames", type=int,
-                        help="Maximum number of frames to be sampled per chunk for inference. Set to a smaller number if OOM.",
-                        default=32)
-    parser.add_argument("-c", "--chunk_duration", type=int,
-                        help="Maximum length in seconds for each chunk of video.",
-                        default=30)
-    parser.add_argument("-v", "--chunk_overlap", type=int,
-                        help="Overlap in seconds between chunks of input video.",
-                        default=2)
-    parser.add_argument("-r", "--resolution", type=int, nargs=2,
-                        help="Desired spatial resolution of input video if different than original. Width x Height")
-    parser.add_argument("-o", "--outfile", type=str,
-                        help="File to write generated text.", default='')
+    def generate_overall_summary(self):
+        # Generate overall summary from available chunk summaries
+        overall_start_time = time.time()
+        with ThreadPoolExecutor() as pool:
+            future = pool.submit(post_request, 
+                            {key: value["summary"] for key, value in self.chunk_summaries.items()})
+            res = eval(future.result().decode("utf-8"))
+        
+        # Check for anomaly score and extend to Vertex if needed
+        if res["anomaly_score"] >= self.config.anomaly_threshold:
+            print("Anomaly score exceeds threshold. Extending to Vertex.")
 
-    tot_st_time = time.time()
+            # Gather required chunks
+            chunks = [os.path.join(self.config.chunk_dir, camera_id, file)
+                      for camera_id in self.rtsp_sources.keys()
+                      for file in os.listdir(os.path.join(self.config.chunk_dir, camera_id))
+                      if file.endswith(".avi")]
+
+            # Limit the number of chunks to 10
+            if len(chunks) > 10:
+                step = len(chunks) // 10
+                chunks = chunks[::step][:10]
+            
+            # Post request to Vertex
+            vertex_request = {"text_prompt": self.cloud_prompt, "video_paths": chunks}
+            vertex_response = post_request(vertex_request, endpoint="vertex_generate")
+            vertex_response = eval(vertex_response.decode("utf-8"))
+            res = {
+                "overall_summary": vertex_response.get("content", ""),
+                "anomaly_score": vertex_response.get("anomaly_score", 0.0)
+            }
+                    
+        return res
+    
+    def cleanup_chunks(self):
+        """Delete processed chunks that have been summarized and reset chunk summaries."""
+        for camera_id in self.rtsp_sources.keys():
+            camera_dir = os.path.join(self.config.chunk_dir, camera_id)
+            if os.path.exists(camera_dir):
+                for file in os.listdir(camera_dir):
+                    chunk_name = Path(file).stem
+                    if file.endswith(".avi") and chunk_name in self.chunk_summaries:
+                        os.remove(os.path.join(camera_dir, file))
+                        del self.chunk_summaries[chunk_name]
+
+    def summarize(self):
+        while True:
+            # Check if videos have been created by the chunk loader
+            camera_dir = os.path.join(self.config.chunk_dir, "cam01")
+            if not os.path.exists(camera_dir):
+                continue
+
+            # Find the oldest chunk based on timestamp (BIGGEST AREA FOR IMPROVEMENT)
+            chunks = [vfile for vfile in os.listdir(camera_dir) if vfile.endswith(".avi")]
+            if chunks:
+                oldest_chunk = min(chunks, key=lambda f: datetime.strptime(extract_timestamp_from_chunk(f), "%Y-%m-%d_%H-%M-%S"))
+
+                # If metadata for all chunks for this timestamp has been written, process them
+                timestamp = extract_timestamp_from_chunk(oldest_chunk)
+                if all_metadata_written(timestamp, self.rtsp_sources, self.config.chunk_dir):
+                    self.generate_chunk_summary(oldest_chunk, timestamp)
+
+            # Call generate_overall_summary at the specified cadence
+            if self.config.use_merger:
+                current_time = time.time()
+                if current_time - self.last_merge_time >= self.config.merge_cadence and self.chunk_summaries:
+                    # Generate overall summary and anomaly score
+                    res = self.generate_overall_summary()
+                    self.last_merge_time = current_time
+
+                    # Determine start and end times for the overall summary
+                    oldest_chunk_start_time = min(
+                        summary["start_time"] for summary in self.chunk_summaries.values()
+                    )
+                    newest_chunk_end_time = max(
+                        summary["end_time"] for summary in self.chunk_summaries.values()
+                    )
+
+                    # Write to JSON file
+                    json_output = {
+                        "start_time": oldest_chunk_start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "end_time": newest_chunk_end_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "summary": res.get("overall_summary", ""),
+                        "anomaly_score": res.get("anomaly_score", 0.0)
+                    }
+                    json_file_path = self.config.outfile
+                    with open(json_file_path, "a") as json_file:
+                        json.dump(json_output, json_file, indent=4)
+                        json_file.write("\n")
+
+                    # Cleanup processed chunks
+                    self.cleanup_chunks()
+            else:
+                # Write individual chunk summaries to JSON file
+                for chunk_name, summary in self.chunk_summaries.items():
+                    json_output = {
+                        "chunk_name": chunk_name,
+                        "start_time": summary["start_time"].strftime("%Y-%m-%d %H:%M:%S"),
+                        "end_time": summary["end_time"].strftime("%Y-%m-%d %H:%M:%S"),
+                        "summary": summary["summary"]
+                    }
+                    json_file_path = self.config.outfile
+                    with open(json_file_path, "a") as json_file:
+                        json.dump(json_output, json_file, indent=4)
+                        json_file.write("\n")
+
+                # Cleanup processed chunks
+                self.cleanup_chunks()
+        
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser("Generate video summarization using LangChain, OpenVINO-genai, and MiniCPM-V-2_6.")
+    parser.add_argument("-rs", "--rtsp_sources", type=str, nargs="+", help="All RTSP sources to be summarized.")
+    #parser.add_argument("rtsp_sources", type=str, nargs="+", help="All RTSP sources to be summarized.")
+    parser.add_argument("-p", "--prompt", type=str, default="Please summarize this video.", help="Text prompt.")
+    parser.add_argument("-c", "--chunk_duration", type=int, default=30, help="Maximum length in seconds for each chunk.")
+    parser.add_argument("-v", "--chunk_overlap", type=int, default=2, help="Overlap in seconds between chunks.")
+    parser.add_argument("-fps", "--framerate", type=int, default=10, help="Framerate for processing video chunks.")
+    parser.add_argument("-od", "--chunk_dir", type=str, default="multi_cam_chunks", help="Directory to store RTSP chunks.")
+    parser.add_argument("-at", "--anomaly_threshold", type=float, default=0.7, help="Threshold for anomaly detection.")
+    parser.add_argument("-mc", "--merge_cadence", type=int, default=60, help="Cadence (in seconds) to merge summaries.")
+    parser.add_argument("-jf", "--json_file", type=str, default="summary_output.json", help="JSON file to append summaries.")
+    parser.add_argument("-um", "--use_merger", action="store_true", help="Whether to use the merger/vertex for overall summaries.")
     args = parser.parse_args()
-    if not os.path.exists(args.video_file):
-        print(f"{args.video_file} does not exist.")
-        exit()
 
-    # Create template for inputs
-    prompt = PromptTemplate(
-        input_variables=["video", "question"],
-        template="{video},{question}"
+    config = SummarizerConfig(
+        rtsp_sources=args.rtsp_sources,
+        prompt=args.prompt,
+        chunk_duration=args.chunk_duration,
+        chunk_overlap=args.chunk_overlap,
+        framerate=args.framerate,
+        outfile=args.json_file,
+        chunk_dir=args.chunk_dir,
+        anomaly_threshold=args.anomaly_threshold,
+        merge_cadence=args.merge_cadence,
+        use_merger=args.use_merger,
     )
 
-    # Wrap OpenVINO-GenAI optimized model in custom langchain wrapper
-    resolution = [] if not args.resolution else args.resolution
-    ov_minicpm = OVMiniCPMV26Worker(model_dir=args.model_dir,
-                                    device=args.device,
-                                    max_new_tokens=args.max_new_tokens,
-                                    max_num_frames=args.max_num_frames,
-                                    resolution=resolution)
-
-    # Create pipeline and invoke
-    chain = prompt | ov_minicpm
-
-    # Initialize video chunk loader
-    loader = VideoChunkLoader(
-        video_path=args.video_file,
-        chunking_mechanism="sliding_window",
-        chunk_duration=args.chunk_duration,
-        chunk_overlap=args.chunk_overlap)
-
-    # Start log
-    output_handler("python " + " ".join(sys.argv),
-                   filename=args.outfile, mode='w',
-                   verbose=False)
-
-    # Loop through docs and generate chunk summaries    
-    chunk_summaries = {}
-    for doc in loader.lazy_load():
-        # Log metadata
-        output_handler(str(f"Chunk Metadata: {doc.metadata}"),
-                       filename=args.outfile, mode='a')
-        output_handler(str(f"Chunk Content: {doc.page_content}"),
-                       filename=args.outfile, mode='a')
-
-        # Generate summaries
-        chunk_st_time = time.time()
-        video_name = Path(doc.metadata['chunk_path'])
-        inputs = {"video": video_name, "question": args.prompt}
-        output = chain.invoke(inputs)
-
-        # Log output
-        output_handler(output, filename=args.outfile, mode='a', verbose=False)
-        chunk_summaries[Path(doc.metadata[
-                                 'chunk_path']).stem] = f"Start time: {doc.metadata['start_time']} End time: {doc.metadata['end_time']}\n" + output
-        output_handler("\nChunk Inference time: {} sec\n".format(time.time() - chunk_st_time), filename=args.outfile,
-                       mode='a')
-
-    # Summarize the full video, using the subsections summaries from each chunk
-
-    overall_summ_st_time = time.time()
-    # two ways to get overall_summary and anomaly score:
-
-    # 1. refer to test_api.py to use post an HTTP request to call API wrapper summary merger (uses llama3.2)
-    with ThreadPoolExecutor() as pool:
-        future = pool.submit(post_request, chunk_summaries)
-        res = ast.literal_eval(future.result().decode("utf-8"))
-
-        print(f"Overall Summary: {res['overall_summary']}")
-        print(f"Anomaly Score: {res['anomaly_score']}")
-
-    # 2. pass existing minicpm based chain, this does not use the FastAPI route and calls the class functions directly
-    # summary_merger = SummaryMerger(chain=chain, device="GPU")
-    # ret = summary_merger.merge_summaries(chunk_summaries)
-    # print(ret)
-
-    output_handler("\nOverall-Video Summary Inference time: {} sec\n".format(time.time() - overall_summ_st_time),
-                   filename=args.outfile, mode="a")
-
-    output_handler("\nTotal Inference time: {} sec\n".format(time.time() - tot_st_time), filename=args.outfile,
-                   mode='a')
-    output_handler(output, filename=args.outfile, mode='a', verbose=False)
+    # Initialize and run the video summarizer
+    summarizer = VideoSummarizer(config)
+    summarizer.summarize()

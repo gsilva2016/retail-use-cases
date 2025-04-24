@@ -1,4 +1,4 @@
-# Summarize Videos Using OpenVINO-GenAI, Langchain, and MiniCPM-V-2_6
+# Summarize RTSP Streams Using OpenVINO-GenAI, Langchain, and MiniCPM-V-2_6
 
 ## Installation
 
@@ -32,14 +32,7 @@ optimum-cli export openvino -m openbmb/MiniCPM-V-2_6 --trust-remote-code --weigh
 
 ## Run Video Summarization
 
-Summarize [this sample video](https://github.com/intel-iot-devkit/sample-videos/raw/master/one-by-one-person-detection.mp4)
-using `video_summarizer.py`.
-
-```
-./run-demo.sh 
-```
-
-Note: if the demo has already been run, you can use the following command to skip the video download.
+Summarize the RTSP_SOURCE defined in the run_demo.sh script using `video_summarizer.py`.
 
 ```
 ./run-demo.sh --skip

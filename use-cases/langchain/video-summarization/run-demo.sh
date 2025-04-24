@@ -11,28 +11,17 @@ else
     wget https://github.com/intel-iot-devkit/sample-videos/raw/master/one-by-one-person-detection.mp4
 fi
 
-INPUT_FILE="one-by-one-person-detection.mp4"
-DEVICE="GPU"
-RESOLUTION_X=480
-RESOLUTION_Y=270
-PROMPT='As an expert investigator, please analyze this video. Summarize the video, highlighting any shoplifting or suspicious activity. The output must contain the following 3 sections: Overall Summary, Activity Observed, Potential Suspicious Activity. It should be formatted similar to the following example:
+RTSP_SOURCES="rtsp://admin:<password>@192.168.2.109"
 
-**Overall Summary**
-Here is a detailed description of the video.
-
-**Activity Observed**
-1) Here is a bullet point list of the activities observed. If nothing is observed, say so, and the list should have no more than 10 items.
-
-**Potential Suspicious Activity**
-1) Here is a bullet point list of suspicious behavior (if any) to highlight.
-'
+PROMPT="Describe the video in detail, specifically noting the behaviors of people within the frames."
 
 echo "Starting FastAPI app"
 uvicorn api.app:app &
 APP_PID=$!
+sleep 10
 
 echo "Running Video Summarizer"
-PYTHONPATH=. python summarizer/video_summarizer.py $INPUT_FILE MiniCPM_INT8/ -d $DEVICE -r $RESOLUTION_X $RESOLUTION_Y -p "$PROMPT"
+PYTHONPATH=. python summarizer/video_summarizer.py -rs "$RTSP_SOURCES" -p "$PROMPT"
 
 # terminate fastapi app after video summarization concludes
 kill $APP_PID
