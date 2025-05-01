@@ -19,6 +19,15 @@ command can be used to skip the re-install of dependencies.
 ./install.sh --skip
 ```
 
+## Setup Milvus as a Standalone Docker container
+
+```
+chmod +x ./milvus/setup.sh
+./milvus/setup.sh
+
+Verify its running via: docker ps
+```
+
 ## Convert and Save Optimized MiniCPM-V-2_6
 
 This section can be skipped if you ran `install.sh` the first time. The `install.sh` script runs this command as part of 
