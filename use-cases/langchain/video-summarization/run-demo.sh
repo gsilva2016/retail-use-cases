@@ -8,11 +8,14 @@ if [ "$1" == "--skip" ]; then
 	echo "Skipping sample video download"
 else
     # Download sample video
-    wget https://github.com/intel-iot-devkit/sample-videos/raw/master/one-by-one-person-detection.mp4
+    # wget https://github.com/intel-iot-devkit/sample-videos/raw/master/one-by-one-person-detection.mp4
+    echo "Pass"
 fi
 
-INPUT_FILE="Tripod_angle.mp4"
-DEVICE="GPU.1"
+#INPUT_FILE="Tripod_angle.mp4"
+#INPUT_FILE="$HOME/skk/videos/bb_chunk_small.mp4"
+INPUT_FILE="$HOME/skk/videos/35_theft.mp4"
+DEVICE="GPU"
 RESOLUTION_X=480
 RESOLUTION_Y=270
 PROMPT='As an expert investigator, please analyze this video. Summarize the video, highlighting any shoplifting or suspicious activity. The output must contain the following 3 sections: Overall Summary, Activity Observed, Potential Suspicious Activity. It should be formatted similar to the following example:
@@ -33,8 +36,8 @@ APP_PID=$!
 sleep 10
 
 echo "Running Video Summarizer"
-PYTHONPATH=. python summarizer/video_summarizer.py $INPUT_FILE MiniCPM_INT8/ -d $DEVICE -r $RESOLUTION_X $RESOLUTION_Y -p "$PROMPT" -o "output-test.json"
-#streamlit run summarizer/streamlit_merge.py --server.maxUploadSize=10000
+PYTHONPATH=. python summarizer/video_summarizer.py $INPUT_FILE $HOME/skk/models/MiniCPMint8/ -d $DEVICE -r $RESOLUTION_X $RESOLUTION_Y -p "$PROMPT" # -o "output-test.json"
+# streamlit run summarizer/streamlit_merge.py --server.maxUploadSize=10000
 
 # terminate fastapi app after video summarization concludes
 kill $APP_PID

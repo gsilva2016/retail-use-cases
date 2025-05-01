@@ -7,3 +7,5 @@ decord
 fastapi
 uvicorn
 requests
+pymilvus==2.5.6
+langchain_milvus

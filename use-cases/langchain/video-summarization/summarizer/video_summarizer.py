@@ -1,9 +1,10 @@
 import argparse
 import ast
 import os
-import sys
+import queue
 import time
 import json
+import uuid
 from itertools import tee
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -22,6 +23,47 @@ def post_request(input_data):
     formatted_req = {"summaries": input_data}
     response = requests.post(url="http://127.0.0.1:8000/merge_summaries", json=formatted_req)
     return response.content
+
+
+def ingest_into_milvus(ingest_q):
+    while True:
+        chunk_summaries = []
+        end_ingestion = False
+        while not ingest_q.empty():
+            item = ingest_q.get()
+            if item == "END":
+                end_ingestion = True
+                ingest_q.task_done()
+                break
+            chunk_summaries.append(item)
+
+        if end_ingestion:
+            break
+
+        if chunk_summaries:
+            formatted_req = {
+                "data": chunk_summaries
+
+            }
+
+            # print(formatted_req)
+            print(f"Milvus: Ingesting {len(chunk_summaries)} chunk summaries into Milvus")
+            try:
+                response = requests.post(url="http://127.0.0.1:8000/embed_txt_and_store", json=formatted_req)
+                if response.status_code != 200:
+                    print(f"Milvus: Error: {response.status_code}, {response.content}")
+
+                milvus_res = response.json()
+                print(
+                    f"Milvus: Chunk Summaries Ingested into Milvus: {milvus_res['status']}, Total chunks: {milvus_res['total_chunks']}")
+
+            except requests.exceptions.RequestException as e:
+                print(f"Milvus: Request failed: {e}")
+
+        else:
+            print("Milvus: Waiting for chunk summaries to ingest")
+
+        time.sleep(10)
 
 def tag_last(generator):
     gen1, gen2 = tee(generator)
@@ -104,7 +146,7 @@ def summarizer_main(args):
         cloud_model = VertexWrapper(args.cloud_model)
         cloud_prompt = args.prompt + 'Please analyze all attached videos as if they were combined into a single video. In addition, the last information produced must be a score between 0 and 1 to represent how suspicious the the video is. The score should be a float rounded to the tenth decimal and formatted as the following example: \n **anomaly score**: 0.0'
     else:
-        print("Not initialzing cloud model instance...")
+        print("Not initializing cloud model instance...")
         cloud_model = None
         cloud_prompt = None
 
@@ -126,64 +168,87 @@ def summarizer_main(args):
     merge_start_time = 0
     merge_threads = []
     all_chunk_outputs = {}
+    ingest_queue = queue.Queue()
 
-    tot_inf_st_time = time.time()
+    print("Main: Starting chunk summary ingestion into Milvus")
+    # Ingest chunk summaries into the running Milvus instance
+    with ThreadPoolExecutor() as pool:
+        milvus_future = pool.submit(ingest_into_milvus, ingest_queue)
 
-    for doc, is_last in tag_last(loader.lazy_load()):
-        chunk_st_time = time.time()
-        video_name = Path(doc.metadata['chunk_path'])
-        inputs = {"video": video_name, "question": args.prompt}
-        output = chain.invoke(inputs)
+        tot_inf_st_time = time.time()
 
-        chunk_key = Path(doc.metadata['chunk_path']).stem
-        chunk_summary = {
-            "chunk_id": doc.metadata['chunk_id'],
-            "summary": f"Start time: {doc.metadata['start_time']} End time: {doc.metadata['end_time']}\n{output}"
-        }
-        chunk_summaries[chunk_key] = chunk_summary
-        all_chunk_outputs[chunk_key] = chunk_summary["summary"]
+        for doc, is_last in tag_last(loader.lazy_load()):
+            print("Processing chunk...")
 
-        print(f"Chunk Summary Time: {time.time() - chunk_st_time} sec\n")
+            chunk_st_time = time.time()
+            video_name = Path(doc.metadata['chunk_path'])
+            inputs = {"video": video_name, "question": args.prompt}
+            output = chain.invoke(inputs)
 
-        call_merger = (doc.metadata['chunk_id']+1) % merge_cadence == 0
+            chunk_key = Path(doc.metadata['chunk_path']).stem
+            chunk_summary = {
+                "chunk_id": doc.metadata['chunk_id'],
+                "summary": f"Start time: {doc.metadata['start_time']} End time: {doc.metadata['end_time']}\n{output}"
+            }
+            chunk_summaries[chunk_key] = chunk_summary
+            all_chunk_outputs[chunk_key] = chunk_summary["summary"]
 
-        if merge_cadence == float('inf') and not is_last:
-            continue
+            print(f"Chunk Summary Time: {time.time() - chunk_st_time} sec\n")
 
-        if call_merger or (not call_merger and is_last):
-            print('\n\nSending Chunks to Merger!\n\n')
+            ingest_queue.put(
+                {
+                    "chunk_id": f"{doc.metadata['chunk_id']}_{uuid.uuid4()}",
+                    "chunk_path": doc.metadata['chunk_path'],
+                    "chunk_summary": f"Start time: {doc.metadata['start_time']} End time: {doc.metadata['end_time']}\n{output}",
+                    "start_time": f"{doc.metadata['start_time']}",
+                    "end_time": f"{doc.metadata['end_time']}"
 
-            # Create a dictionary without chunk_id for async_merge_chunks
-            chunk_summaries_no_id = {key: value["summary"] for key, value in chunk_summaries.items()}
-
-            # Print chunk_ids being processed
-            processing_chunk_ids = [value["chunk_id"] for value in chunk_summaries.values()]
-            print(f"Processing chunk_ids: {processing_chunk_ids}")
-
-            merge_thread = threading.Thread(
-                target=async_merge_chunks,
-                args=(chunk_summaries_no_id, merge_start_time, doc.metadata['end_time'],
-                      args.outfile, args.extend_to_vertex, cloud_model, cloud_prompt,
-                      args.anomaly_thresh, loader, doc, mode, processing_chunk_ids)
+                }
             )
-            merge_thread.start()
-            merge_threads.append(merge_thread)
 
-            if mode == "w":
-                mode = "a"
-            merge_start_time = doc.metadata['end_time'] - args.chunk_overlap
+            call_merger = (doc.metadata['chunk_id']+1) % merge_cadence == 0
 
-            # Remove processed chunks from chunk_summaries
-            print(f"Cleaning processed chunk_ids: {processing_chunk_ids}")
-            chunk_summaries = {key: value for key, value in chunk_summaries.items()
-                               if value["chunk_id"] not in processing_chunk_ids}
+            if merge_cadence == float('inf') and not is_last:
+                continue
 
-    for t in merge_threads:
-        t.join()
+            if call_merger or (not call_merger and is_last):
+                print('\n\nSending Chunks to Merger!\n\n')
 
-    print("\nTotal Inference Time: {} sec\n".format(time.time() - tot_inf_st_time))
+                # Create a dictionary without chunk_id for async_merge_chunks
+                chunk_summaries_no_id = {key: value["summary"] for key, value in chunk_summaries.items()}
 
-    return all_chunk_outputs  
+                # Print chunk_ids being processed
+                processing_chunk_ids = [value["chunk_id"] for value in chunk_summaries.values()]
+                print(f"Processing chunk_ids: {processing_chunk_ids}")
+
+                merge_thread = threading.Thread(
+                    target=async_merge_chunks,
+                    args=(chunk_summaries_no_id, merge_start_time, doc.metadata['end_time'],
+                          args.outfile, args.extend_to_vertex, cloud_model, cloud_prompt,
+                          args.anomaly_thresh, loader, doc, mode, processing_chunk_ids)
+                )
+                merge_thread.start()
+                merge_threads.append(merge_thread)
+
+                if mode == "w":
+                    mode = "a"
+                merge_start_time = doc.metadata['end_time'] - args.chunk_overlap
+
+                # Remove processed chunks from chunk_summaries
+                print(f"Cleaning processed chunk_ids: {processing_chunk_ids}")
+                chunk_summaries = {key: value for key, value in chunk_summaries.items()
+                                   if value["chunk_id"] not in processing_chunk_ids}
+
+        for t in merge_threads:
+            t.join()
+
+        while not ingest_queue.empty():
+            time.sleep(1)
+        ingest_queue.put("END")
+
+        print("\nTotal Inference Time: {} sec\n".format(time.time() - tot_inf_st_time))
+
+        return all_chunk_outputs
 
 if __name__ == '__main__':
     parser_txt = "Generate video summarization using LangChain, OpenVINO-genai, and MiniCPM-V-2_6."
@@ -193,7 +258,7 @@ if __name__ == '__main__':
     parser.add_argument("-p", "--prompt", type=str, default="Please summarize this video.")
     parser.add_argument("-d", "--device", type=str, default="CPU")
     parser.add_argument("-t", "--max_new_tokens", type=int, default=256)
-    parser.add_argument("-f", "--max_num_frames", type=int, default=64)
+    parser.add_argument("-f", "--max_num_frames", type=int, default=30)
     parser.add_argument("-c", "--chunk_duration", type=int, default=15)
     parser.add_argument("-v", "--chunk_overlap", type=int, default=2)
     parser.add_argument("-mc", "--merge_cadence", type=int, default=30)
