@@ -15,6 +15,12 @@ merge_result_queue = Queue()
 from ov_lvm_wrapper import stream_queue
 from streamlit_summarizer import summarizer_main, merge_queue, vertex_queue
 
+def get_video_base64(video_path):
+    with open(video_path, "rb") as video_file:
+        video_bytes = video_file.read()
+        encoded = base64.b64encode(video_bytes).decode()
+        return f"data:video/mp4;base64,{encoded}"
+
 def run_summarization(args):
     summarizer_main(args)
 
@@ -56,26 +62,78 @@ if 'vertex_summary' not in st.session_state:
 # Split the page into two columns
 spacer_col, left_col, right_col = st.columns([0.05, 0.55, 0.4])  # Adjust ratio as needed
 
-#video_path = 'tripod_5min.mp4'
-
-video_path = 'computex_video.mp4'
+video_path = 'Tripod_angle_first30.mp4'
 video_url = f'http://localhost:8005/{video_path}'
 
 with left_col:
-    if os.path.exists(video_path):
-        st.video(video_path)
-    # if video_path:
-    #     video_html = f"""
-    #         <video autoplay loop muted playsinline width="700">
-    #             <source src="{video_url}" type="video/mp4">
-    #             Your browser does not support the video tag.
-    #         </video>
-    #     """
-    #     st.markdown(video_html, unsafe_allow_html=True)
+    start_button_pressed = st.button("Start Summarization")
+    if 'play_video' not in st.session_state:
+        st.session_state['play_video'] = False
 
+    if start_button_pressed:
+        st.session_state['play_video'] = True
+
+        args = argparse.Namespace(
+            video_file='Tripod_angle_first30.mp4',
+            model_dir='MiniCPM_INT8/',
+            #prompt="You are an expert investigator, please analyze this video and identify any instances where a person appears to pick up an item and place it in their pocket, bag, or clothing. Pay attention to items that come off the shelf, and highlight behavior that may indicate shoplifting, such as looking around, or when items are seen in one frame and not in the next (could be puttin item in a pocket instead of basket).",
+            prompt="""
+            You are an expert investigator, please analyze this video and identify any instances where a person appears to pick up an item and place it in their pocket, bag, or clothing. Pay attention to items that come off the shelf, and highlight behavior that may indicate shoplifting, such as looking around, or when items are seen in one frame and not in the next (could be puttin item in a pocket instead of basket).
+            Summarize the video - noting actions of all individuals in the scene - generating an Overall Summary and Potential Suspicious Activity.
+            It should be formatted as such:
+
+            Overall Summary
+            Here is a detailed description of the video.
+
+            Potential Suspicious Activity
+            1) Here is a bullet point list of suspicious behavior (if any) to highlight.
+            """,
+            device='GPU.1',
+            max_new_tokens=220,
+            max_num_frames=48,
+            chunk_duration=15,
+            chunk_overlap=2,
+            merge_cadence=30,
+            resolution=[480, 270],
+            outfile='',
+            extend_to_vertex=True,
+            anomaly_thresh=0.0,
+            cloud_model="gemini-2.0-flash-exp"
+        )
+
+        stop_signal = threading.Event()
+        summarize_thread = threading.Thread(target=run_summarization, args=(args,))
+        summarize_thread.start()
+
+        # Define these before the loop
+        chunk_duration = args.chunk_duration
+        chunk_overlap = args.chunk_overlap
+        chunk_index = 0
+        current_time = 0
+        chunk_summaries = []
+
+with left_col:
+    if os.path.exists(video_path):
+        time.sleep(10) # Give 10 sec for initialization
+        #st.video(video_path)
+        #video_data_url = get_video_base64(video_path)
+        #autoplay = "autoplay" if st.session_state.get("play_video") else ""
+        #loop = "loop"
+        video_html = f"""
+        <video id="myVideo" width="100%" height="auto" controls>
+            <source src="{video_url}" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+        <script>
+            const video = document.getElementById('myVideo');
+            if ({str(st.session_state.get("play_video")).lower()}) {{
+                video.play();
+            }}
+        </script>
+        """
+        components.html(video_html, height=550)
     else:
         st.warning("The video file cannot be found")
-    start_button_pressed = st.button("Start Summarization")
 
 with right_col:
     st.markdown("### 🧠 Merged Summaries")
@@ -116,8 +174,30 @@ with left_col:
     st.markdown("### 📄 Chunk Summaries")
     chunk_placeholder = st.empty()
     safe_text = (st.session_state['streamed_text'].replace('\n', '<br>').replace('[CHUNK ', '<br><strong>[CHUNK ').replace('sec]', 'sec]</strong>'))
+    # chunk_placeholder.html( 
+    #     """
+    #     <div id="scrollable" style='height:500px; overflow-y:auto;'>
+    #         <pre style="white-space: pre-wrap;" id="streamed_text"></pre>
+    #         <div id="bottom-anchor"></div>
+    #     </div>
+    #     """
+    # )
+    # components.html(chunk_html, height=500)
     # chunk_placeholder.markdown(
-    #     create_html_component(safe_text, 500),
+    #     f"""
+    #     <div id="scrollable" style='height:500px; overflow-y:auto; position:relative;'>
+    #         <div style="white-space: pre-wrap;" id="streamed_text">{safe_text}</div>
+    #         <div id="bottom-anchor"></div>
+    #     </div>
+    #     <script>
+    #         setTimeout(() => {{
+    #             var anchor = document.getElementById('bottom-anchor');
+    #             if (anchor) {{
+    #                 anchor.scrollIntoView({{ behavior: 'auto' }});
+    #             }}
+    #         }}, 100);
+    #     </script>
+    #     """,
     #     unsafe_allow_html=True
     # )
     chunk_placeholder.markdown(
@@ -135,65 +215,41 @@ with left_col:
         unsafe_allow_html=True
     )
 
-
 if start_button_pressed:
-    args = argparse.Namespace(
-        video_file='computex_video.mp4',
-        model_dir='MiniCPM_INT8/',
-        #prompt="You are an expert investigator, please analyze this video and identify any instances where a person appears to pick up an item and place it in their pocket, bag, or clothing. Pay attention to items that come off the shelf, and highlight behavior that may indicate shoplifting, such as looking around, or when items are seen in one frame and not in the next (could be puttin item in a pocket instead of basket).",
-        prompt="""
-        You are an expert investigator, please analyze this video and identify any instances where a person appears to pick up an item and place it in their pocket, bag, or clothing. Pay attention to items that come off the shelf, and highlight behavior that may indicate shoplifting, such as looking around, or when items are seen in one frame and not in the next (could be puttin item in a pocket instead of basket).
-        Summarize the video - noting actions of all individuals in the scene - generating an Overall Summary and Potential Suspicious Activity.
-        It should be formatted as such:
-
-        Overall Summary
-        Here is a detailed description of the video.
-
-        Potential Suspicious Activity
-        1) Here is a bullet point list of suspicious behavior (if any) to highlight.
-        """,
-        device='GPU.1',
-        max_new_tokens=220,
-        max_num_frames=48,
-        chunk_duration=15,
-        chunk_overlap=2,
-        merge_cadence=30,
-        resolution=[480, 270],
-        outfile='',
-        extend_to_vertex=True,
-        anomaly_thresh=0.5,
-        cloud_model="gemini-2.0-flash-exp"
-    )
-
-    stop_signal = threading.Event()
-    summarize_thread = threading.Thread(target=run_summarization, args=(args,))
-    summarize_thread.start()
-
-    # Define these before the loop
-    chunk_duration = args.chunk_duration
-    chunk_overlap = args.chunk_overlap
-    chunk_index = 0
-    current_time = 0
-    chunk_summaries = []
-
     while summarize_thread.is_alive() or not stream_queue.empty() or not merge_queue.empty() or not vertex_queue.empty():
         try:
             if not stream_queue.empty():
                 token = stream_queue.get(timeout=0.1)
                 st.session_state['streamed_text'] += token
                 safe_text = (st.session_state['streamed_text'].replace('\n', '<br>').replace('[CHUNK ', '<br><strong>[CHUNK ').replace('sec]', 'sec]</strong>'))
-                # chunk_placeholder.markdown(
-                #     create_html_component(safe_text, 500),
-                #     unsafe_allow_html=True
-                # )
+                # chunk_html = f"""
+                # <div id="scrollable" style='height:500px; overflow-y:auto;'>
+                #     <pre style="white-space: pre-wrap;" id="streamed_text">{safe_text}</pre>
+                #     <div id="bottom-anchor"></div>
+                # </div>
+                # <script>
+                #     setTimeout(() => {{
+                #         var anchor = document.getElementById('bottom-anchor');
+                #         if (anchor) {{
+                #             anchor.scrollIntoView({{ behavior: 'auto' }});
+                #         }}
+                #     }}, 0);
+                # </script>
+                # """
+                # chunk_placeholder.html(chunk_html)
                 chunk_placeholder.markdown(
                     f"""
-                    <div id="scrollable" style='height:500px; overflow-y:auto;'>
-                       <div style="white-space: pre-wrap;" id="streamed_text">{safe_text}</div>
+                    <div id="scrollable" style='height:500px; overflow-y:auto; position:relative;'>
+                        <div style="white-space: pre-wrap;" id="streamed_text">{safe_text}</div>
+                        <div id="bottom-anchor"></div>
                     </div>
                     <script>
-                        var container = document.getElementById('scrollable');
-                        container.scrollTop = container.scrollHeight;
+                        setTimeout(() => {{
+                            var anchor = document.getElementById('bottom-anchor');
+                            if (anchor) {{
+                                anchor.scrollIntoView({{ behavior: 'auto' }});
+                            }}
+                        }}, 100);
                     </script>
                     """,
                     unsafe_allow_html=True

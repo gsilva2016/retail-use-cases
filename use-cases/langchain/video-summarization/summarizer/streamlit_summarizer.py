@@ -11,6 +11,7 @@ import threading
 import queue
 import re
 import uuid
+import subprocess
 
 import requests
 from langchain.prompts import PromptTemplate
@@ -27,6 +28,38 @@ merge_queue = queue.Queue()
 # Create thread safe queue for vertex summaries
 vertex_queue = queue.Queue()
 vertex_score = queue.Queue()
+
+def concatenate_videos(video_path, output_path='merged_video.mp4', list_file='merge_videos.txt'):
+    with open(list_file, "w") as f:
+        for path in video_path:
+            f.write(f"file '{path}'\n")
+
+    cmd = [
+        "ffmpeg",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list_file,
+        "-c", "copy",
+        output_path
+    ]
+
+    try:
+        subprocess.run(cmd, check=True)
+        print(f"Successfully created {output_path}")
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print("Error during video concatenation")
+        return None
+    
+def delete_file_if_exists(path):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"Removed {path}")
+        else:
+            print(f"{path} not found")
+    except Exception as e:
+        print(f"Error in removing file {path}")
 
 def post_request(input_data):
     formatted_req = {"summaries": input_data}
@@ -119,9 +152,15 @@ def async_merge_chunks(chunk_summaries, merge_start_time, end_time, outfile, ext
                 # Use processing_chunk_ids to calculate chunks to upload
                 merged_chunks = [os.path.join(loader.output_dir,
                                               f"chunk_{ch_id}.mp4") for ch_id in processing_chunk_ids]
-                print("Created merged chunks!")
-                cloud_response = cloud_model.generate(cloud_prompt, video_paths=merged_chunks)
-                #print(f"\n\Generation from cloud model: {cloud_response}\n\n")
+                #print(f"Created merged chunks: {merged_chunks}")
+
+                merged_path = concatenate_videos(merged_chunks, output_path='merged_video.mp4')
+                
+                cloud_response = cloud_model.generate(cloud_prompt, video_paths=[merged_path])
+
+                delete_file_if_exists(merged_path)
+
+                print(f"\n\Generation from cloud model: {cloud_response}\n\n")
                 anomaly_score = cloud_model.extract_anomaly_score(cloud_response)
 
                 # Update the merge res summary and anomaly score with vertex output
@@ -135,11 +174,12 @@ def async_merge_chunks(chunk_summaries, merge_start_time, end_time, outfile, ext
                 else:
                     color = "red"
                 styled_scoreline = f'<span style="color:{color}">Anomaly score from gemini: {anomaly_score}</span>'
-                match = re.search(r"\*?\*?Anomaly Score\*?\*?:?\s*(-?\d+(\.\d+)?)", cloud_response, re.DOTALL)
-                if match:    
-                    print("Anomaly line detected from regex!!\n\n\n")
-                    sys.exit()
-                    cloud_response = re.sub(r"\*?\*?anomaly Score\*?\*?:?\s*(-?\d+(\.\d+)?)", styled_scoreline, cloud_response)
+                # match = re.search(r"\*\*anomaly score\*\*: [0-9.]+", cloud_response, re.DOTALL)
+                # if match:    
+                #     print("Anomaly line detected from regex!!\n\n\n")
+                #     sys.exit()
+                cloud_response = re.sub(r"\*\*anomaly score\*\*: [-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", styled_scoreline, cloud_response)
+                print(f"Cloud response: {cloud_response}")
                 cloud_response = f"[CLOUD SUMMARY {merge_start_time}-{end_time}sec]\n{cloud_response}\n\n"
                 vertex_queue.put(cloud_response)
                 cloud_model.cleanup()
@@ -184,7 +224,7 @@ def summarizer_main(args):
     if args.extend_to_vertex:
         print('Initializing cloud model instance...')
         cloud_model = VertexWrapper(args.cloud_model)
-        cloud_prompt = args.prompt + 'Please analyze all attached videos as if they were combined into a single video. Please notice and respond with any suspicious activity from people in the video. In addition, the last information produced must be a score between 0 and 1 to represent how suspicious the the video is. The score should be a float rounded to the tenth decimal and formatted as the following example: \n **anomaly score**: 0.0'
+        cloud_prompt = args.prompt + "Please notice and respond with any suspicious activity from people in the video. Suspicious activity includes sticking items into pockets, and/or looking around for witnesses. In addition, the last information produced must be a score between 0 and 1 to represent how suspicious the the video is. The score should be a float rounded to the tenth decimal and formatted as the following example: \n **anomaly score**: 0.0"
     else:
         print("Not initialzing cloud model instance...")
         cloud_model = None
@@ -201,6 +241,7 @@ def summarizer_main(args):
     merge_cadence = max(1, int(args.merge_cadence / args.chunk_duration)) if args.merge_cadence else float('inf')
 
     print("\nInitialization Time: {} sec\n".format(time.time() - init_st_time))
+
     
     # Loop through docs and generate individual chunk summaries
     mode = "w"
@@ -214,15 +255,23 @@ def summarizer_main(args):
 
     # Ingest chunk summaries into the running Milvus instance
     with ThreadPoolExecutor() as pool:
-        milvus_future = pool.submit(ingest_into_milvus, ingest_queue)    
+        milvus_future = pool.submit(ingest_into_milvus, ingest_queue)
 
         tot_inf_st_time = time.time()
 
         for doc, is_last in tag_last(loader.lazy_load()):
+            # if stop_signal and stop_signal.is_set():
+            #     print("Summarization interrupted before processing chunk")
+            #     break
+
             chunk_st_time = time.time()
             video_name = Path(doc.metadata['chunk_path'])
             inputs = {"video": video_name, "question": args.prompt}
             output = chain.invoke(inputs)
+
+            # if stop_signal and stop_signal.is_set():
+            #     print("Summarization interrupted before processing chunk output")
+            #     break
 
             chunk_key = Path(doc.metadata['chunk_path']).stem
             chunk_summary = {
@@ -260,6 +309,10 @@ def summarizer_main(args):
                 # Print chunk_ids being processed
                 processing_chunk_ids = [value["chunk_id"] for value in chunk_summaries.values()]
                 print(f"Processing chunk_ids: {processing_chunk_ids}")
+
+                # if stop_signal and stop_signal.is_set():
+                #     print("Summarization interrupted before processing chunk")
+                #     break
 
                 merge_thread = threading.Thread(
                     target=async_merge_chunks,
