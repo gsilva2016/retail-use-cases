@@ -11,20 +11,25 @@ else
     wget https://github.com/intel-iot-devkit/sample-videos/raw/master/one-by-one-person-detection.mp4
 fi
 
-#echo "Starting http server for video hosting"
-#python -m http.server 8002 &
 echo "Starting FastAPI app"
 uvicorn api.app:app &
 APP_PID=$!
 sleep 10
 
 echo "Running Video Summarizer"
-#PYTHONPATH=. python summarizer/video_summarizer.py $INPUT_FILE MiniCPM_INT8/ -d $DEVICE -r $RESOLUTION_X $RESOLUTION_Y -p "$PROMPT" -o "output-test.json"
 python -m http.server 8005 &
+VIDEO_PID=$! &
 streamlit run summarizer/streamlit_merge.py --server.port 8501 &
 streamlit run summarizer/streamlit_rag.py --server.port 8502
-#streamlit run streamlit_test.py --server.port 8502
 
 # terminate fastapi app after video summarization concludes
-kill $APP_PID
-#pkill -f "python -m http.server 8002"
+kill $APP_PID &
+PID=$(lsof -ti tcp:8005)
+if [ -n "$PID" ]; then
+    echo"Killing video http server"
+    kill -9 $PID
+else
+    echo "No process on port 8005"
+fi
+
+#pkill -f "python -m http.server 8005"

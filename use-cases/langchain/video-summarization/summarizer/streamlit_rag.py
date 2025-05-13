@@ -14,7 +14,8 @@ st.title("Video RAG Search interface")
 
 query = st.text_input("Enter your query:", "")
 
-video_file = 'tripod_5min.mp4'
+video_file = 'computex_video.mp4'
+#video_url= f'http://localhost:8005/{video_file}'
 
 col1, col2 = st.columns([1, 1])
 
