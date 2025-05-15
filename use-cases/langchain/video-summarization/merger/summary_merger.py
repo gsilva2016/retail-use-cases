@@ -13,6 +13,8 @@ class SummaryMerger:
 
     def __init__(self, model_id="llmware/llama-3.2-3b-instruct-ov", device="CPU", max_new_tokens=512, batch_size=5,
                  chain=None):
+    # def __init__(self, model_id="llmware/llama-3.1-instruct-ov", device="CPU", max_new_tokens=512, batch_size=5,
+    #             chain=None):
         self.ov_llm = None
 
         if chain is not None:
@@ -63,7 +65,7 @@ class SummaryMerger:
 
             self.summary_prompt = """Please create a summary of the overall video highlighting all the important information, targetting potential suspicious behavior found in the given descriptions. 
             How would you rate the scene described on a scale from 0.0 to 1.0, with 0.0 representing a standard scene and 1.0 denoting a scene with suspicious activities? 
-            Please organize your answer according to this example:
+            Please be clear and concise, organizing your answer according to this example:
 
             Overall Summary: A summary of the entire text description in about five sentences or less, focused on the people rather than the scene itself.
 

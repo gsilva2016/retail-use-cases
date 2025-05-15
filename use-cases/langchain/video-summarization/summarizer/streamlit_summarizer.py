@@ -174,10 +174,6 @@ def async_merge_chunks(chunk_summaries, merge_start_time, end_time, outfile, ext
                 else:
                     color = "red"
                 styled_scoreline = f'<span style="color:{color}">Anomaly score from gemini: {anomaly_score}</span>'
-                # match = re.search(r"\*\*anomaly score\*\*: [0-9.]+", cloud_response, re.DOTALL)
-                # if match:    
-                #     print("Anomaly line detected from regex!!\n\n\n")
-                #     sys.exit()
                 cloud_response = re.sub(r"\*\*anomaly score\*\*: [-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", styled_scoreline, cloud_response)
                 print(f"Cloud response: {cloud_response}")
                 cloud_response = f"[CLOUD SUMMARY {merge_start_time}-{end_time}sec]\n{cloud_response}\n\n"
@@ -224,7 +220,25 @@ def summarizer_main(args):
     if args.extend_to_vertex:
         print('Initializing cloud model instance...')
         cloud_model = VertexWrapper(args.cloud_model)
-        cloud_prompt = args.prompt + "Please notice and respond with any suspicious activity from people in the video. Suspicious activity includes sticking items into pockets, and/or looking around for witnesses. In addition, the last information produced must be a score between 0 and 1 to represent how suspicious the the video is. The score should be a float rounded to the tenth decimal and formatted as the following example: \n **anomaly score**: 0.0"
+        cloud_prompt = """You are an expert investigator. See attached video of a shopping aisle security camera. 
+        I want you to call out moments of identified or highly suspected shoplifting or stealing. 
+        Look at people interacting with objects on display and taking into their possession. Please then provide a score between 0 and 1 
+        to represent the amount of suspicious activity you've just analyzed. If you see no humans, then score must be 0, as there is no 
+        suspicious activity possible. The score should be a float rounded to the tenth decimal, and it should be representative of the summary you generate.
+        Please organize your answer according to this example:
+        Overall Summary: A summary of the entire text description in about five sentences or less, focused on the people rather than the scene itself.
+        Potential Suspicious Activity: List any activities that might indicate suspicious behavior.
+        **anomaly score**: <floating point value representing suspicious activity>"""
+        # cloud_prompt = "You are viewing footage of a security camera, and you are an intelligent assistant meant to help detect and respond with any" \
+        # " suspicious activity from people in the video. Firstly, Please create a summary of the overall video highlighting all the important information. " \
+        # "Then please explicitly mention any suspicious behavior such as putting items in pockets or personal bags. Suspicious activity includes sticking items " \
+        # "into pockets, and/or looking around for witnesses, please focus on the people and their behaviors." \
+        # "In addition, the last information produced must be a score between 0 and 1 to represent how suspicious the the video is." \
+        # "The score should be a float rounded to the tenth decimal and formatted as the following example: \n **anomaly score**: 0.0. " \
+        # "Please organize your answer according to this example: " \
+        # "Overall Summary: A summary of the entire text description in about five sentences or less, focused on the people rather than the scene itself." \
+        # "Potential Suspicious Activity: List any activities that might indicate suspicious behavior." \
+        # "**anomaly score**: <floating point value representing suspicious activity>"
     else:
         print("Not initialzing cloud model instance...")
         cloud_model = None
