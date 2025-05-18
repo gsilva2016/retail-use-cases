@@ -65,7 +65,8 @@ class SummaryMerger:
 
             self.summary_prompt = """Please create a summary of the overall video highlighting all the important information, targetting potential suspicious behavior found in the given descriptions. 
             How would you rate the scene described on a scale from 0.0 to 1.0, with 0.0 representing a standard scene and 1.0 denoting a scene with suspicious activities? 
-            Please be clear and concise, organizing your answer according to this example:
+            Please be clear and concise, and don't mention the 'start time' or 'end time' information in your response at all.
+            Stricly organize your answer according to this example:
 
             Overall Summary: A summary of the entire text description in about five sentences or less, focused on the people rather than the scene itself.
 
