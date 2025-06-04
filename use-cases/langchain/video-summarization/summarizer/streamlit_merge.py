@@ -139,7 +139,7 @@ spacer_col, left_col, right_col = st.columns([0.05, 0.55, 0.4])  # Adjust ratio 
 
 #video_path = 'tripod_5min.mp4'
 
-video_path = 'computex_video.mp4'
+video_path = 'one-by-one-person-detection.mp4'
 video_url = f'http://localhost:8005/{video_path}'
 
 
@@ -149,16 +149,6 @@ with left_col:
     with video_placeholder:
       if os.path.exists(video_path):
           st.video(video_path, muted=True)
-          #st.experimental_fragment(vlm_video_player(video_path, muted=True))
-      # if video_path:
-      #     video_html = f"""
-      #         <video autoplay loop muted playsinline width="700">
-      #             <source src="{video_url}" type="video/mp4">
-      #             Your browser does not support the video tag.
-      #         </video>
-      #     """
-      #     st.markdown(video_html, unsafe_allow_html=True)
-  
       else:
           st.warning("The video file cannot be found")
     start_button_pressed = st.button("Start Summarization", on_click=toggle_start_button,) 
@@ -205,10 +195,6 @@ with left_col:
     st.markdown("### 📄 Chunk Summaries")
     chunk_placeholder = st.empty()
     safe_text = (st.session_state['streamed_text'].replace('\n', '<br>').replace('[CHUNK ', '<br><strong>[CHUNK ').replace('sec]', 'sec]</strong>'))
-    # chunk_placeholder.markdown(
-    #     create_html_component(safe_text, 500),
-    #     unsafe_allow_html=True
-    # )
     chunk_placeholder.markdown(
         f"""
         <div id="scrollable" style='height:500px; overflow-y:auto;'>
@@ -241,25 +227,11 @@ if start_button_pressed:
   
     stop_signal.clear()
       
-    # stream_result_queue = Queue()
-    # merge_result_queue = Queue()
-    # clear_queue(stream_result_queue)
-    # clear_queue(merge_result_queue)
-    # clear_queue(stream_queue)
-    # clear_queue(merge_queue)
-    # clear_queue(vertex_queue)
-    # clear_queue(alert_queue)
-
-    # st.session_state['streamed_text'] = ''
-    # st.session_state['merged_summary'] = ''
-    # st.session_state['vertex_summary'] = ''
-    
     st.session_state['summarization_started'] = True
     
     args = argparse.Namespace(
-        video_file='computex_video.mp4',
+        video_file='one-by-one-person-detection.mp4',
         model_dir='MiniCPM_INT8/',
-        #prompt="You are an expert investigator, please analyze this video and identify any instances where a person appears to pick up an item and place it in their pocket, bag, or clothing. Pay attention to items that come off the shelf, and highlight behavior that may indicate shoplifting, such as looking around, or when items are seen in one frame and not in the next (could be puttin item in a pocket instead of basket).",
         prompt="""
         You are an expert investigator, please analyze this video and identify any instances where a person appears to pick up an item and place it in their pocket, bag, or clothing. Pay attention to items that come off the shelf, and highlight behavior that may indicate shoplifting, such as looking around, or when items are seen in one frame and not in the next (could be puttin item in a pocket instead of basket).
         Summarize the video - noting actions of all individuals in the scene - generating an Overall Summary and Potential Suspicious Activity.
@@ -272,7 +244,6 @@ if start_button_pressed:
         1) Here is a bullet point list of suspicious behavior (if any) to highlight.
         """,
         device='GPU.1',
-        #device='GPU',
         max_new_tokens=220,
         max_num_frames=48,
         chunk_duration=15,
@@ -280,7 +251,7 @@ if start_button_pressed:
         merge_cadence=30,
         resolution=[480, 270],
         outfile='',
-        extend_to_vertex=True,
+        extend_to_vertex=False,
         anomaly_thresh=0.5,
         cloud_model="gemini-2.5-pro-preview-05-06"
     )
