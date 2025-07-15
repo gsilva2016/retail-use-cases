@@ -12,6 +12,7 @@ import queue
 import re
 import uuid
 import subprocess
+import asyncio
 
 import requests
 from langchain.prompts import PromptTemplate
@@ -19,6 +20,7 @@ from langchain_community.document_loaders.video import VideoChunkLoader
 
 from ov_lvm_wrapper import OVMiniCPMV26Worker, reset_chunk_variables
 from vertex_extension import VertexWrapper
+from video_agents import run_video_agent
 
 os.environ["no_proxy"] = "localhost,127.0.0.1"
 
@@ -73,6 +75,7 @@ def post_request(input_data):
     response = requests.post(url="http://127.0.0.1:8000/merge_summaries", json=formatted_req)
     return response.content
 
+ 
 def ingest_into_milvus(ingest_q):
     while not stop_signal.is_set():
         chunk_summaries = []
@@ -122,9 +125,19 @@ def tag_last(generator):
 
 merge_lock = threading.Lock()  # Add a threading lock
 
+def extract_anomaly_score(summary):
+        # matching based on multiple scenarios observed; goal is to match floating point or integer after Anomaly Score
+        # Anomaly Score sometimes is encapsulated within ** and sometimes LLM omits
+        match = re.search(r"\*?\*?Anomaly Score\*?\*?:?\s*(-?\d+(\.\d+)?)", summary, re.DOTALL)
+        if match:
+            return float(match.group(1)) if match.group(1) else 0.0
+        return 0.0
+        
 def async_merge_chunks(chunk_summaries, merge_start_time, end_time, outfile, extend_to_vertex, 
                        cloud_model, cloud_prompt, anomaly_thresh, loader, doc, mode="w",
                        processing_chunk_ids=None, merge_threads=None):
+                           
+    
     # Check if stop_signal is set before starting   
     if stop_signal.is_set():       
         print("\n\nMerge operation aborted due to stop signal.\n\n")
@@ -146,6 +159,7 @@ def async_merge_chunks(chunk_summaries, merge_start_time, end_time, outfile, ext
                             print(f"Joinging threads in merge stop: {t}")
                             t.join()
                     return None
+                ###"""
                 future = pool.submit(post_request, chunk_summaries)
                 merge_res = ast.literal_eval(future.result().decode("utf-8"))
                 merge_output = f"[MERGED SUMMARY {merge_start_time}-{end_time}sec]\n{merge_res['overall_summary']}\n\nAnomaly score from LLM: {merge_res['anomaly_score']}\n\n"
@@ -168,52 +182,129 @@ def async_merge_chunks(chunk_summaries, merge_start_time, end_time, outfile, ext
                 print(f"Merge Result from local LLM: {merge_res['overall_summary']}\n")
                 print(f"Anomaly score from LLM: {merge_res['anomaly_score']}\n")
             print("Merge Chunks Time: {} sec\n".format(time.time() - merge_st_time))
-
-            # Extend to cloud, if asked
-            if extend_to_vertex and merge_res['anomaly_score'] >= anomaly_thresh:
-                # Check if stop_signal is set before starting   
-                if stop_signal.is_set():       
-                    print("\n\nCloud operation aborted due to stop signal.\n\n")
-                    if merge_threads:
-                        for t in merge_threads:
-                            print(f"Joinging threads in merge stop: {t}")
-                            t.join()
-                    return None
-
-                print("Sending anomalous clip to Vertex!")
-                cloud_st_time = time.time()
                 
-                # Use processing_chunk_ids to calculate chunks to upload
-                merged_chunks = [os.path.join(loader.output_dir,
-                                              f"chunk_{ch_id}.mp4") for ch_id in processing_chunk_ids]
-                #print(f"Created merged chunks: {merged_chunks}")
+            ########################### call agent ############################
+            if stop_signal.is_set():       
+                print("\n\nCloud operation aborted due to stop signal.\n\n")
+                if merge_threads:
+                    for t in merge_threads:
+                        print(f"Joinging threads in merge stop: {t}")
+                        t.join()
+                return None
 
-                merged_path = concatenate_videos(merged_chunks, output_path='merged_video.mp4')
-                
-                cloud_response = cloud_model.generate(cloud_prompt, video_paths=[merged_path])
+            print("Agent sending anomalous clip to Vertex!")
+            cloud_st_time = time.time()
+            # Use processing_chunk_ids to calculate chunks to upload
+            merged_chunks = [os.path.join(loader.output_dir,f"chunk_{ch_id}.mp4") for ch_id in processing_chunk_ids]
+            merged_video_path = concatenate_videos(merged_chunks, output_path=f'merged_video_{merge_start_time}.mp4')                   
+            # print(" **** merged_video_path ****", merged_video_path)
+            summary = merge_res['overall_summary']
+            score = merge_res['anomaly_score']
+            # Call the agentic workflow
+            review_decision, vlm_result = asyncio.run(run_video_agent(summary, score, merged_video_path))
+            print("agent output: \n", review_decision, vlm_result)
 
-                delete_file_if_exists(merged_path)
-
-                print(f"\n\Generation from cloud model: {cloud_response}\n\n")
-                anomaly_score = cloud_model.extract_anomaly_score(cloud_response)
-
-                # Update the merge res summary and anomaly score with vertex output
-                merge_res = {'overall_summary': cloud_response,
-                             'anomaly_score': anomaly_score}
-                color = ""
-                if anomaly_score < 0.3:
-                    color = "green"
-                elif anomaly_score < 0.7:
-                    color = "orange"
+            
+            delete_file_if_exists(merged_video_path)
+            # Handle agentic outputs
+            if review_decision:
+                try:
+                    review_decision_json = json.loads(review_decision)
+                except Exception:
+                    review_decision_json = {}
+            
+                if review_decision_json.get("review_required"):
+                    print("Agent requested VLM review.")
+                    print("VLM Review Output:", vlm_result)
+                    # Optionally update merge_res with new results
+                    if vlm_result:
+                        try:
+                            # Try to parse as JSON
+                            result = json.loads(vlm_result)
+                            overall_summary = result.get("overall_summary", "")
+                            potential_suspicious_activity = result.get("potential_suspicious_activity", "")
+                            anomaly_score = result.get("anomaly_score", 0.0)
+                            
+                            print("Overall Summary:", overall_summary)
+                            print("Potential Suspicious Activity:", potential_suspicious_activity)
+                            print("Anomaly Score:", anomaly_score)
+                            print("Parsed as JSON. Anomaly score:", anomaly_score)
+                        except Exception as e:
+                            # Fallback: use regex extraction if not valid JSON
+                            print("Failed to parse VLM result as JSON:", e)
+                            print("Raw VLM result:", vlm_result)
+                            overall_summary = vlm_result
+                            anomaly_score = extract_anomaly_score(vlm_result)
+                            print("Extracted anomaly score with regex:", anomaly_score)
+                        
+                        merge_res['overall_summary'] = overall_summary
+                        merge_res['anomaly_score'] = anomaly_score
+                        cloud_response = f"[ 🤖  CLOUD AGENT SUMMARY {merge_start_time}-{end_time}sec] \nOverallSummary\n {merge_res['overall_summary']} \n\nPotential Suspicious Activity\n {potential_suspicious_activity}\n\nAnomaly score from Gemini Agent: {merge_res['anomaly_score']}\n\n"
+                        color = ""
+                        if anomaly_score < 0.3:
+                            color = "green"
+                        elif anomaly_score < 0.7:
+                            color = "orange"
+                        else:
+                            color = "red"
+                            
+                        styled_scoreline = f'<span style="color:{color}">Anomaly score from Gemini Agent: {anomaly_score}</span>'
+                        cloud_response = re.sub("Anomaly score from Gemini Agent:\s*([0-9.]+)", styled_scoreline, cloud_response)
+                            
+                        print(f"Cloud response: {cloud_response}")
+                        vertex_queue.put(cloud_response)
+                        print("Cloud Summary Time: {} sec\n\n".format(time.time() - cloud_st_time))
                 else:
-                    color = "red"
-                styled_scoreline = f'<span style="color:{color}">Anomaly score from gemini: {anomaly_score}</span>'
-                cloud_response = re.sub(r"\*\*anomaly score\*\*: [-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", styled_scoreline, cloud_response)
-                print(f"Cloud response: {cloud_response}")
-                cloud_response = f"[CLOUD SUMMARY {merge_start_time}-{end_time}sec]\n{cloud_response}\n\n"
-                vertex_queue.put(cloud_response)
-                cloud_model.cleanup()
-                print("Cloud Summary Time: {} sec\n\n".format(time.time() - cloud_st_time))
+                    print("Agent decided no VLM review is required.")
+            else:
+                print("Agentic review did not return a decision.")
+            ####################################################################
+            
+            # # Extend to cloud, if asked
+            # if extend_to_vertex and merge_res['anomaly_score'] >= anomaly_thresh:
+                # # Check if stop_signal is set before starting   
+                # if stop_signal.is_set():       
+                    # print("\n\nCloud operation aborted due to stop signal.\n\n")
+                    # if merge_threads:
+                        # for t in merge_threads:
+                            # print(f"Joinging threads in merge stop: {t}")
+                            # t.join()
+                    # return None
+
+                # print("Sending anomalous clip to Vertex!")
+                # cloud_st_time = time.time()
+                
+                # # Use processing_chunk_ids to calculate chunks to upload
+                # merged_chunks = [os.path.join(loader.output_dir,
+                                              # f"chunk_{ch_id}.mp4") for ch_id in processing_chunk_ids]
+                # #print(f"Created merged chunks: {merged_chunks}")
+
+                # merged_path = concatenate_videos(merged_chunks, output_path=f'merged_video_{merge_start_time}.mp4')
+                
+                # cloud_response = cloud_model.generate(cloud_prompt, video_paths=[merged_path])
+
+                # delete_file_if_exists(merged_path)
+
+                # print(f"\n\Generation from cloud model: {cloud_response}\n\n")
+                # anomaly_score = cloud_model.extract_anomaly_score(cloud_response)
+
+                # # Update the merge res summary and anomaly score with vertex output
+                # merge_res = {'overall_summary': cloud_response,
+                             # 'anomaly_score': anomaly_score}
+                # color = ""
+                # if anomaly_score < 0.3:
+                    # color = "green"
+                # elif anomaly_score < 0.7:
+                    # color = "orange"
+                # else:
+                    # color = "red"
+                # styled_scoreline = f'<span style="color:{color}">Anomaly score from gemini: {anomaly_score}</span>'
+                # cloud_response = re.sub(r"\*\*anomaly score\*\*: [-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", styled_scoreline, cloud_response)
+                # print(f"Cloud response: {cloud_response}")
+                # cloud_response = f"[CLOUD SUMMARY {merge_start_time}-{end_time}sec]\n{cloud_response}\n\n"
+                # vertex_queue.put(cloud_response)
+                # cloud_model.cleanup()
+                # print("Cloud Summary Time: {} sec\n\n".format(time.time() - cloud_st_time))
 
             if outfile:
                 merge_res["start_time"] = merge_start_time
@@ -346,7 +437,6 @@ def summarizer_main(args):
                 print(f"Milvus ingested chunk: {doc.metadata['chunk_id']}")
 
             call_merger = (doc.metadata['chunk_id']+1) % merge_cadence == 0
-
             if merge_cadence == float('inf') and not is_last:
                 continue
 

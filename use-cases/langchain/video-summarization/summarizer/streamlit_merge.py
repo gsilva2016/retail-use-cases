@@ -243,7 +243,7 @@ if start_button_pressed:
         Potential Suspicious Activity
         1) Here is a bullet point list of suspicious behavior (if any) to highlight.
         """,
-        device='GPU.1',
+        device='GPU',
         max_new_tokens=220,
         max_num_frames=48,
         chunk_duration=15,
